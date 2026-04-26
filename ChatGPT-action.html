@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ギャラクシアン風</title>
+<style>
+body { margin:0; background:black; overflow:hidden; }
+canvas { display:block; background:black; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+canvas.width = innerWidth;
+canvas.height = innerHeight;
+
+//======================
+let player = {
+    x: canvas.width/2,
+    y: canvas.height-80,
+    dead:false,
+    deadTimer:0
+};
+
+let bullets = [];
+let enemies = [];
+let effects = [];
+
+let score = 0;
+let highScore = localStorage.getItem("gal_high") || 0;
+
+let touchX = null;
+
+//======================
+// 入力
+//======================
+canvas.addEventListener("touchstart", e=>{
+    if(player.dead) return;
+    touchX = e.touches[0].clientX;
+    shoot();
+});
+canvas.addEventListener("touchmove", e=>{
+    if(player.dead) return;
+    touchX = e.touches[0].clientX;
+});
+canvas.addEventListener("touchend", ()=> touchX=null);
+
+//======================
+// プレイヤー（ドット描画）
+//======================
+function drawPlayer(){
+    if(player.dead) return;
+
+    const p = player;
+    ctx.fillStyle = "#00ffff";
+
+    // ドット風三角機体
+    ctx.fillRect(p.x-6, p.y, 12, 4);
+    ctx.fillRect(p.x-10, p.y+4, 20, 4);
+    ctx.fillRect(p.x-4, p.y-4, 8, 4);
+
+    // コア
+    ctx.fillStyle = "white";
+    ctx.fillRect(p.x-2, p.y, 4, 4);
+}
+
+function updatePlayer(){
+    if(player.dead){
+        player.deadTimer--;
+        if(player.deadTimer<=0) resetGame();
+        return;
+    }
+
+    if(touchX!==null){
+        player.x += (touchX-player.x)*0.2;
+    }
+}
+
+//======================
+// 弾
+//======================
+function shoot(){
+    bullets.push({x:player.x, y:player.y});
+}
+
+function updateBullets(){
+    bullets.forEach(b=> b.y -= 10);
+    bullets = bullets.filter(b=>b.y>-10);
+}
+
+function drawBullets(){
+    ctx.fillStyle="#ffff00";
+    bullets.forEach(b=>{
+        ctx.fillRect(b.x-1, b.y, 2, 8);
+    });
+}
+
+//======================
+// 敵（レトロ風）
+//======================
+function spawnEnemies(){
+    if(enemies.length===0){
+        for(let i=0;i<5;i++){
+            enemies.push({
+                baseX:100+i*60,
+                baseY:80,
+                x:100+i*60,
+                y:80,
+                state:"idle",
+                t:0
+            });
+        }
+    }
+}
+
+function updateEnemies(){
+    enemies.forEach(e=>{
+        if(e.state==="idle"){
+            e.x = e.baseX + Math.sin(Date.now()/500 + e.baseX)*20;
+
+            if(Math.random()<0.005){
+                e.state="attack";
+                e.t=0;
+            }
+        } else if(e.state==="attack"){
+            e.t+=0.03;
+            e.x = e.baseX + Math.sin(e.t*3)*150;
+            e.y = e.baseY + e.t*300;
+
+            if(e.y>canvas.height){
+                e.state="return";
+                e.t=0;
+            }
+        } else {
+            e.x += (e.baseX-e.x)*0.05;
+            e.y += (e.baseY-e.y)*0.05;
+
+            if(Math.abs(e.x-e.baseX)<1){
+                e.state="idle";
+            }
+        }
+    });
+}
+
+function drawEnemies(){
+    enemies.forEach(e=>{
+        // ギャラクシアン風カラー
+        ctx.fillStyle="#ff3333";
+        ctx.fillRect(e.x-8, e.y-6, 16, 6);
+
+        ctx.fillStyle="#00ff00";
+        ctx.fillRect(e.x-6, e.y, 12, 6);
+
+        ctx.fillStyle="#ffff00";
+        ctx.fillRect(e.x-2, e.y+6, 4, 4);
+    });
+}
+
+//======================
+// 爆発（リング＋粒子）
+//======================
+function createExplosion(x,y){
+    effects.push({type:"ring", x:x, y:y, r:0, life:20});
+
+    for(let i=0;i<20;i++){
+        effects.push({
+            type:"particle",
+            x:x,
+            y:y,
+            vx:(Math.random()-0.5)*5,
+            vy:(Math.random()-0.5)*5,
+            life:30
+        });
+    }
+}
+
+function updateEffects(){
+    effects.forEach(e=>{
+        if(e.type==="ring"){
+            e.r+=2;
+        } else {
+            e.x+=e.vx;
+            e.y+=e.vy;
+        }
+        e.life--;
+    });
+    effects = effects.filter(e=>e.life>0);
+}
+
+function drawEffects(){
+    effects.forEach(e=>{
+        if(e.type==="ring"){
+            ctx.strokeStyle="orange";
+            ctx.beginPath();
+            ctx.arc(e.x,e.y,e.r,0,Math.PI*2);
+            ctx.stroke();
+        } else {
+            ctx.fillStyle="orange";
+            ctx.fillRect(e.x,e.y,2,2);
+        }
+    });
+}
+
+//======================
+// 衝突
+//======================
+function checkCollision(){
+    if(player.dead) return;
+
+    bullets.forEach((b,bi)=>{
+        enemies.forEach((e,ei)=>{
+            if(Math.abs(b.x-e.x)<15 && Math.abs(b.y-e.y)<15){
+                createExplosion(e.x,e.y);
+                bullets.splice(bi,1);
+                enemies.splice(ei,1);
+                score+=100;
+            }
+        });
+    });
+
+    enemies.forEach(e=>{
+        if(Math.abs(player.x-e.x)<20 && Math.abs(player.y-e.y)<20){
+            createExplosion(player.x,player.y);
+
+            if(score>highScore){
+                highScore=score;
+                localStorage.setItem("gal_high",highScore);
+            }
+
+            player.dead=true;
+            player.deadTimer=60;
+        }
+    });
+}
+
+//======================
+// 星
+//======================
+let stars=[];
+for(let i=0;i<100;i++){
+    stars.push({x:Math.random()*canvas.width, y:Math.random()*canvas.height});
+}
+
+function drawStars(){
+    ctx.fillStyle="white";
+    stars.forEach(s=>{
+        s.y+=1;
+        if(s.y>canvas.height)s.y=0;
+        ctx.fillRect(s.x,s.y,1,1);
+    });
+}
+
+//======================
+// UI
+//======================
+function drawUI(){
+    ctx.fillStyle="white";
+    ctx.font="16px monospace";
+    ctx.fillText("SCORE:"+score,10,20);
+    ctx.fillText("HI:"+highScore,10,40);
+
+    if(player.dead){
+        ctx.fillText("GAME OVER",canvas.width/2-50,canvas.height/2);
+    }
+}
+
+//======================
+// リセット
+//======================
+function resetGame(){
+    player.dead=false;
+    score=0;
+    enemies=[];
+    bullets=[];
+}
+
+//======================
+// メイン
+//======================
+function loop(){
+    // 軽いグロー（ブラウン管風）
+    ctx.fillStyle="rgba(0,0,0,0.3)";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    drawStars();
+
+    spawnEnemies();
+    updatePlayer();
+    updateBullets();
+    updateEnemies();
+    updateEffects();
+
+    checkCollision();
+
+    drawPlayer();
+    drawBullets();
+    drawEnemies();
+    drawEffects();
+    drawUI();
+
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

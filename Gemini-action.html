@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>RETRO GALAXY ACTION</title>
+<style>
+    body {
+        margin: 0;
+        background-color: #050505;
+        color: #fff;
+        font-family: 'Courier New', Courier, monospace;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+    #game-container {
+        position: relative;
+        width: 100%;
+        max-width: 400px; /* スマホやアーケード筐体を意識した縦長サイズ */
+        aspect-ratio: 2 / 3;
+        background-color: #000;
+        box-shadow: 0 0 20px rgba(0, 255, 255, 0.2);
+    }
+    canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        image-rendering: pixelated; /* ドット絵をくっきり表示 */
+    }
+    /* ブラウン管モニター風の走査線エフェクト */
+    .crt-overlay {
+        position: absolute;
+        top: 0; left: 0; width: 100%; height: 100%;
+        background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), 
+                    linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+        background-size: 100% 4px, 6px 100%;
+        z-index: 10;
+        pointer-events: none;
+    }
+    #ui-layer {
+        position: absolute;
+        top: 10px; left: 0; width: 100%;
+        display: flex;
+        justify-content: space-between;
+        padding: 0 15px;
+        box-sizing: border-box;
+        z-index: 5;
+        pointer-events: none;
+        font-weight: bold;
+        text-shadow: 2px 2px 0px #f0f;
+    }
+    .score-title { font-size: 14px; color: #ff0; }
+    .score-value { font-size: 18px; color: #fff; }
+    
+    #message-overlay {
+        position: absolute;
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        text-align: center;
+        z-index: 6;
+        pointer-events: none;
+        text-shadow: 2px 2px 0px #00f;
+    }
+    .blink { animation: blinker 1s linear infinite; }
+    @keyframes blinker { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="ui-layer">
+        <div>
+            <div class="score-title">SCORE</div>
+            <div class="score-value" id="scoreDisp">0000</div>
+        </div>
+        <div style="text-align: right;">
+            <div class="score-title">HI-SCORE</div>
+            <div class="score-value" id="hiScoreDisp">0000</div>
+        </div>
+    </div>
+    <div id="message-overlay">
+        <h2 id="mainMsg" style="color: #0ff; font-size: 28px;">RETRO GALAXY</h2>
+        <p id="subMsg" class="blink" style="color: #fff;">TAP TO START</p>
+    </div>
+    <div class="crt-overlay"></div>
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- ゲームの状態管理 ---
+let gameState = 'START'; // START, PLAYING, GAMEOVER
+let score = 0;
+let highScore = localStorage.getItem('retroGalaxyHighScore') || 0;
+document.getElementById('hiScoreDisp').innerText = highScore.toString().padStart(4, '0');
+
+// --- ピクセルアート定義 ---
+const spriteScale = 4;
+const sprites = {
+    player: [
+        "  #  ",
+        " ### ",
+        "#####",
+        "# # #"
+    ],
+    enemyA: [ // 待機時の敵
+        " ### ",
+        "# # #",
+        "#####",
+        " # # "
+    ],
+    enemyB: [ // 動く時の敵
+        " ### ",
+        "# # #",
+        "#####",
+        "#   #"
+    ]
+};
+
+// ピクセルアート描画関数
+function drawSprite(sprite, x, y, color) {
+    ctx.fillStyle = color;
+    const width = sprite[0].length * spriteScale;
+    const height = sprite.length * spriteScale;
+    const startX = x - width / 2;
+    const startY = y - height / 2;
+
+    for (let row = 0; row < sprite.length; row++) {
+        for (let col = 0; col < sprite[row].length; col++) {
+            if (sprite[row][col] === '#') {
+                ctx.fillRect(startX + col * spriteScale, startY + row * spriteScale, spriteScale, spriteScale);
+            }
+        }
+    }
+}
+
+// --- オブジェクト配列 ---
+let player;
+let bullets = [];
+let enemies = [];
+let particles = [];
+let stars = [];
+
+// 背景の星を初期化
+for(let i=0; i<50; i++) {
+    stars.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        speed: 0.5 + Math.random() * 2,
+        size: Math.random() * 2 + 1
+    });
+}
+
+// --- クラス定義 ---
+class Player {
+    constructor() {
+        this.x = canvas.width / 2;
+        this.y = canvas.height - 50;
+        this.width = 5 * spriteScale;
+        this.height = 4 * spriteScale;
+        this.targetX = this.x; // 長押し移動時のターゲット
+    }
+    draw() {
+        drawSprite(sprites.player, this.x, this.y, '#0ff');
+    }
+    update() {
+        // 長押し時、ターゲットに向かって滑らかに移動
+        if (isHolding) {
+            this.x += (this.targetX - this.x) * 0.15;
+            // 画面外に出ないように制限
+            this.x = Math.max(this.width/2, Math.min(canvas.width - this.width/2, this.x));
+        }
+    }
+    shoot() {
+        if (gameState !== 'PLAYING') return;
+        bullets.push(new Bullet(this.x, this.y - this.height/2));
+    }
+}
+
+class Bullet {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.speed = 10;
+        this.width = 4;
+        this.height = 12;
+        this.active = true;
+    }
+    draw() {
+        ctx.fillStyle = '#ff0';
+        ctx.fillRect(this.x - this.width/2, this.y - this.height/2, this.width, this.height);
+    }
+    update() {
+        this.y -= this.speed;
+        if (this.y < 0) this.active = false;
+    }
+}
+
+// ギャラクシアン風の敵AI
+let formationPhase = 0;
+class Enemy {
+    constructor(col, row) {
+        this.col = col;
+        this.row = row;
+        this.width = 5 * spriteScale;
+        this.height = 4 * spriteScale;
+        this.x = 0;
+        this.y = 0;
+        this.color = row === 0 ? '#f00' : (row === 1 ? '#fa0' : '#f0f');
+        this.state = 'formation'; // formation, diving, returning
+        this.diveTimer = 0;
+        this.active = true;
+        this.animFrame = 0;
+    }
+
+    draw() {
+        const sprite = (this.animFrame % 40 < 20) ? sprites.enemyA : sprites.enemyB;
+        drawSprite(sprite, this.x, this.y, this.color);
+    }
+
+    update() {
+        this.animFrame++;
+        
+        // 隊列の基本位置 (全体が左右に揺れる)
+        const baseX = canvas.width / 2 - 80 + this.col * 40 + Math.sin(formationPhase) * 60;
+        const baseY = 60 + this.row * 35;
+
+        if (this.state === 'formation') {
+            this.x = baseX;
+            this.y = baseY;
+            // ランダムで急降下開始
+            if (Math.random() < 0.0015) {
+                this.state = 'diving';
+                this.diveTimer = 0;
+            }
+        } 
+        else if (this.state === 'diving') {
+            this.diveTimer++;
+            // 円弧を描きながら急降下 (サイン波を利用)
+            this.y += 3.5;
+            this.x += Math.sin(this.diveTimer * 0.08) * 4;
+
+            if (this.y > canvas.height + 20) {
+                this.state = 'returning';
+                this.y = -20; // 上から再登場
+            }
+        } 
+        else if (this.state === 'returning') {
+            // 隊列の位置へ戻る
+            this.x += (baseX - this.x) * 0.05;
+            this.y += (baseY - this.y) * 0.05;
+            if (Math.abs(baseX - this.x) < 2 && Math.abs(baseY - this.y) < 2) {
+                this.state = 'formation';
+            }
+        }
+    }
+}
+
+// レトロなドット爆発エフェクト
+class Particle {
+    constructor(x, y, color) {
+        this.x = x;
+        this.y = y;
+        this.vx = (Math.random() - 0.5) * 6;
+        this.vy = (Math.random() - 0.5) * 6;
+        this.life = 20 + Math.random() * 20;
+        this.maxLife = this.life;
+        this.color = color;
+        this.size = Math.random() * 4 + 2;
+    }
+    draw() {
+        ctx.fillStyle = this.color;
+        ctx.globalAlpha = Math.max(0, this.life / this.maxLife);
+        ctx.fillRect(this.x, this.y, this.size, this.size);
+        ctx.globalAlpha = 1.0;
+    }
+    update() {
+        this.x += this.vx;
+        this.y += this.vy;
+        this.life--;
+    }
+}
+
+// --- 入力制御（長押しで移動、タップで発射） ---
+let isHolding = false;
+let touchStartTime = 0;
+let touchStartX = 0;
+
+function getEventX(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    return (clientX - rect.left) * (canvas.width / rect.width);
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+    if (gameState === 'START' || gameState === 'GAMEOVER') {
+        startGame();
+        return;
+    }
+    isHolding = true;
+    touchStartTime = Date.now();
+    touchStartX = getEventX(e);
+    if(player) player.targetX = touchStartX;
+});
+
+canvas.addEventListener('pointermove', (e) => {
+    if (isHolding && player) {
+        player.targetX = getEventX(e);
+    }
+});
+
+canvas.addEventListener('pointerup', (e) => {
+    isHolding = false;
+    const touchDuration = Date.now() - touchStartTime;
+    // タッチ時間が短ければ「タップ」と判定してビーム発射
+    if (touchDuration < 250 && gameState === 'PLAYING') {
+        player.shoot();
+    }
+});
+
+// --- ゲームロジック ---
+function createExplosion(x, y, color, amount=15) {
+    for(let i=0; i<amount; i++) {
+        particles.push(new Particle(x, y, color));
+    }
+}
+
+function spawnEnemies() {
+    enemies = [];
+    for(let row=0; row<3; row++) {
+        for(let col=0; col<5; col++) {
+            enemies.push(new Enemy(col, row));
+        }
+    }
+}
+
+function startGame() {
+    score = 0;
+    updateScore();
+    player = new Player();
+    bullets = [];
+    particles = [];
+    spawnEnemies();
+    gameState = 'PLAYING';
+    document.getElementById('mainMsg').innerText = '';
+    document.getElementById('subMsg').innerText = '';
+}
+
+function gameOver() {
+    gameState = 'GAMEOVER';
+    createExplosion(player.x, player.y, '#0ff', 50); // 自機の爆発
+    player = null;
+    
+    if (score > highScore) {
+        highScore = score;
+        localStorage.setItem('retroGalaxyHighScore', highScore);
+        document.getElementById('hiScoreDisp').innerText = highScore.toString().padStart(4, '0');
+    }
+    
+    setTimeout(() => {
+        document.getElementById('mainMsg').innerText = 'GAME OVER';
+        document.getElementById('mainMsg').style.color = '#f00';
+        document.getElementById('subMsg').innerText = 'TAP TO RESTART';
+    }, 1000);
+}
+
+function updateScore() {
+    document.getElementById('scoreDisp').innerText = score.toString().padStart(4, '0');
+}
+
+// 矩形同士の当たり判定
+function isColliding(aX, aY, aW, aH, bX, bY, bW, bH) {
+    return Math.abs(aX - bX) * 2 < (aW + bW) && Math.abs(aY - bY) * 2 < (aH + bH);
+}
+
+// --- メインループ ---
+function gameLoop() {
+    // 画面クリア（少し残像を残してレトロ感を出す）
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 星の描画
+    ctx.fillStyle = '#fff';
+    stars.forEach(star => {
+        star.y += star.speed;
+        if (star.y > canvas.height) star.y = 0;
+        ctx.fillRect(star.x, star.y, star.size, star.size);
+    });
+
+    if (gameState === 'PLAYING') {
+        formationPhase += 0.02;
+
+        // プレイヤー処理
+        if (player) {
+            player.update();
+            player.draw();
+        }
+
+        // ビーム処理
+        bullets.forEach(b => { b.update(); b.draw(); });
+        bullets = bullets.filter(b => b.active);
+
+        // 敵処理
+        let allDead = true;
+        enemies.forEach(enemy => {
+            if (!enemy.active) return;
+            allDead = false;
+            enemy.update();
+            enemy.draw();
+
+            // 自機との衝突判定
+            if (player && isColliding(player.x, player.y, player.width, player.height, enemy.x, enemy.y, enemy.width, enemy.height)) {
+                gameOver();
+            }
+
+            // ビームとの衝突判定
+            bullets.forEach(b => {
+                if (b.active && isColliding(b.x, b.y, b.width, b.height, enemy.x, enemy.y, enemy.width, enemy.height)) {
+                    b.active = false;
+                    enemy.active = false;
+                    createExplosion(enemy.x, enemy.y, enemy.color);
+                    // 状態に応じてスコア変動
+                    score += (enemy.state === 'diving') ? 200 : 50; 
+                    updateScore();
+                }
+            });
+        });
+
+        // Waveクリア時の再配置
+        if (allDead) {
+            setTimeout(spawnEnemies, 1000);
+        }
+    }
+
+    // パーティクル（爆発）処理
+    particles.forEach(p => { p.update(); p.draw(); });
+    particles = particles.filter(p => p.life > 0);
+
+    requestAnimationFrame(gameLoop);
+}
+
+// ゲーム起動
+gameLoop();
+
+</script>
+</body>
+</html>
